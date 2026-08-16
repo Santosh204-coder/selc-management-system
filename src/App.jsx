@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "./supabaseClient.js";
+import Login from "./Login.jsx";
 
 /*
   SANTOSH EDUCATION & LEARNING CENTRE — Management System V2
@@ -50,7 +52,7 @@ const DEFAULT_SETTINGS = {
 
 const CLASSES = ["Nursery", "LKG", "UKG", "1", "2", "3", "4", "5", "6", "7", "8"];
 const FEE_TYPES = ["Monthly Tuition", "Admission", "Exam", "Transport", "Computer", "Other"];
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10) + Date.now().toString(36));
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const monthLabel = (d = new Date()) => d.toLocaleString("en-US", { month: "long", year: "numeric" });
 const fmtNPR = (n) => "Rs. " + Number(n || 0).toLocaleString("en-IN");
@@ -68,29 +70,172 @@ function gradeFor(pct) {
   return { g: "NG", remark: "Not graded" };
 }
 
-async function loadKey(key, fallback) {
-  try {
-    if (window.storage?.get) {
-      const r = await window.storage.get(key, false);
-      if (r?.value != null) return JSON.parse(r.value);
-    }
-  } catch {}
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
+// ---------- Supabase <-> app-shape conversion helpers ----------
+const toStudentApp = r => ({ id:r.id, admissionNo:r.admission_no||"", name:r.name||"", class:r.class||"", dob:r.dob||"", guardian:r.guardian||"", relation:r.relation||"", phone:r.phone||"", emergency:r.emergency||"", address:r.address||"", previousSchool:r.previous_school||"", admissionDate:r.admission_date||"", monthlyFee:r.monthly_fee||0, discount:r.discount||0, status:r.status||"active", notes:r.notes||"" });
+const toStudentDb = s => ({ id:s.id, admission_no:s.admissionNo||null, name:s.name, class:s.class||null, dob:s.dob||null, guardian:s.guardian||null, relation:s.relation||null, phone:s.phone||null, emergency:s.emergency||null, address:s.address||null, previous_school:s.previousSchool||null, admission_date:s.admissionDate||null, monthly_fee:Number(s.monthlyFee)||0, discount:Number(s.discount)||0, status:s.status||"active", notes:s.notes||null });
+
+const toPaymentApp = r => ({ id:r.id, studentId:r.student_id, amount:r.amount, date:r.date, month:r.month||"", note:r.note||"", receiptNo:r.receipt_no||"" });
+const toPaymentDb = (p, userId) => ({ id:p.id, student_id:p.studentId, amount:Number(p.amount)||0, date:p.date, month:p.month||null, note:p.note||null, receipt_no:p.receiptNo||null, created_by:userId||null });
+
+const toFeeApp = r => ({ id:r.id, studentId:r.student_id, type:r.type||"", amount:r.amount, month:r.month||"", note:r.note||"" });
+const toFeeDb = f => ({ id:f.id, student_id:f.studentId, type:f.type||null, amount:Number(f.amount)||0, month:f.month||null, note:f.note||null });
+
+const toStaffApp = r => ({ id:r.id, name:r.name||"", position:r.position||"", phone:r.phone||"", joinDate:r.join_date||"", salary:r.salary||0, address:r.address||"" });
+const toStaffDb = s => ({ id:s.id, name:s.name, position:s.position||null, phone:s.phone||null, join_date:s.joinDate||null, salary:Number(s.salary)||0, address:s.address||null });
+
+const toSettingsApp = r => ({ name:r.name, shortName:r.short_name, tagline:r.tagline, director:r.director, role:r.role, phone1:r.phone1||"", phone2:r.phone2||"", location:r.location||"", email:r.email||"", academicYear:r.academic_year, receiptPrefix:r.receipt_prefix });
+const toSettingsDb = s => ({ id:1, name:s.name, short_name:s.shortName, tagline:s.tagline, director:s.director, role:s.role, phone1:s.phone1||null, phone2:s.phone2||null, location:s.location||null, email:s.email||null, academic_year:s.academicYear, receipt_prefix:s.receiptPrefix });
+
+async function loadAllData() {
+  const [studentsR, paymentsR, feesR, attendanceR, examsR, subjectsR, marksR, staffR, settingsR] = await Promise.all([
+    supabase.from("students").select("*"),
+    supabase.from("payments").select("*"),
+    supabase.from("fees").select("*"),
+    supabase.from("attendance").select("*"),
+    supabase.from("exams").select("*"),
+    supabase.from("exam_subjects").select("*"),
+    supabase.from("marks").select("*"),
+    supabase.from("staff").select("*"),
+    supabase.from("settings").select("*").eq("id", 1).maybeSingle(),
+  ]);
+  const students = (studentsR.data || []).map(toStudentApp);
+  const payments = (paymentsR.data || []).map(toPaymentApp);
+  const fees = (feesR.data || []).map(toFeeApp);
+  const attendance = {};
+  (attendanceR.data || []).forEach(r => { (attendance[r.date] ||= {})[r.student_id] = r.status; });
+  const subjectsByExam = {};
+  (subjectsR.data || []).forEach(r => { (subjectsByExam[r.exam_id] ||= []).push({ id:r.id, name:r.name, max:r.max_marks }); });
+  const exams = (examsR.data || []).map(r => ({ id:r.id, name:r.name, date:r.date||"", subjects: subjectsByExam[r.id] || [] }));
+  const marks = {};
+  (marksR.data || []).forEach(r => { ((marks[r.exam_id] ||= {})[r.student_id] ||= {})[r.subject_id] = r.obtained; });
+  const staff = (staffR.data || []).map(toStaffApp);
+  const settings = settingsR.data ? { ...DEFAULT_SETTINGS, ...toSettingsApp(settingsR.data) } : DEFAULT_SETTINGS;
+  return { students, payments, fees, attendance, exams, marks, staff, settings };
 }
 
-async function saveKey(key, value) {
-  try {
-    if (window.storage?.set) {
-      await window.storage.set(key, JSON.stringify(value), false);
-      return;
-    }
-  } catch {}
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+// Generic diff-sync for simple array-of-records tables (students, payments, fees, staff)
+function makeArraySync(table, toDb, setLocal, getUserId) {
+  return (nextArr) => {
+    setLocal(prevArr => {
+      const nextIds = new Set(nextArr.map(x => x.id));
+      const removed = prevArr.filter(x => !nextIds.has(x.id));
+      (async () => {
+        try {
+          for (const item of removed) await supabase.from(table).delete().eq("id", item.id);
+          if (nextArr.length) {
+            const rows = nextArr.map(item => (table === "payments" ? toDb(item, getUserId?.()) : toDb(item)));
+            const { error } = await supabase.from(table).upsert(rows);
+            if (error) throw error;
+          }
+        } catch (e) {
+          console.error(table, "sync failed", e);
+          alert(`Could not save changes to ${table}: ${e.message || "permission denied"}`);
+        }
+      })();
+      return nextArr;
+    });
+  };
+}
+
+// Attendance: {date:{studentId:status}} -> upsert changed rows
+function makeAttendanceSync(setLocal, getUserId) {
+  return (nextObj) => {
+    setLocal(prevObj => {
+      (async () => {
+        try {
+          const rows = [];
+          for (const date in nextObj) {
+            for (const studentId in nextObj[date]) {
+              const status = nextObj[date][studentId];
+              const prevStatus = prevObj?.[date]?.[studentId];
+              if (status !== prevStatus) rows.push({ student_id: studentId, date, status, marked_by: getUserId?.() || null });
+            }
+          }
+          if (rows.length) {
+            const { error } = await supabase.from("attendance").upsert(rows, { onConflict: "student_id,date" });
+            if (error) throw error;
+          }
+        } catch (e) {
+          console.error("attendance sync failed", e);
+          alert(`Could not save attendance: ${e.message || "permission denied"}`);
+        }
+      })();
+      return nextObj;
+    });
+  };
+}
+
+// Exams: array of {id,name,date,subjects:[{id,name,max}]} -> only creation happens in the UI
+function makeExamsSync(setLocal, getUserId) {
+  return (nextArr) => {
+    setLocal(prevArr => {
+      const prevIds = new Set(prevArr.map(x => x.id));
+      const added = nextArr.filter(x => !prevIds.has(x.id));
+      (async () => {
+        try {
+          for (const exam of added) {
+            const { error: e1 } = await supabase.from("exams").insert({ id: exam.id, name: exam.name, date: exam.date || null, created_by: getUserId?.() || null });
+            if (e1) throw e1;
+            if (exam.subjects?.length) {
+              const subRows = exam.subjects.map(s => ({ id: s.id, exam_id: exam.id, name: s.name, max_marks: Number(s.max) || 100 }));
+              const { error: e2 } = await supabase.from("exam_subjects").insert(subRows);
+              if (e2) throw e2;
+            }
+          }
+        } catch (e) {
+          console.error("exams sync failed", e);
+          alert(`Could not save exam: ${e.message || "permission denied"}`);
+        }
+      })();
+      return nextArr;
+    });
+  };
+}
+
+// Marks: {examId:{studentId:{subjectId:obtained}}} -> upsert changed cells
+function makeMarksSync(setLocal) {
+  return (nextObj) => {
+    setLocal(prevObj => {
+      (async () => {
+        try {
+          const rows = [];
+          for (const examId in nextObj) {
+            for (const studentId in nextObj[examId]) {
+              const subjMap = nextObj[examId][studentId] || {};
+              for (const subjectId in subjMap) {
+                const val = subjMap[subjectId];
+                const prevVal = prevObj?.[examId]?.[studentId]?.[subjectId];
+                if (val !== prevVal && val !== undefined) rows.push({ exam_id: examId, student_id: studentId, subject_id: subjectId, obtained: val });
+              }
+            }
+          }
+          if (rows.length) {
+            const { error } = await supabase.from("marks").upsert(rows, { onConflict: "exam_id,subject_id,student_id" });
+            if (error) throw error;
+          }
+        } catch (e) {
+          console.error("marks sync failed", e);
+          alert(`Could not save marks: ${e.message || "permission denied"}`);
+        }
+      })();
+      return nextObj;
+    });
+  };
+}
+
+function makeSettingsSync(setLocal) {
+  return (next) => {
+    setLocal(next);
+    (async () => {
+      try {
+        const { error } = await supabase.from("settings").update(toSettingsDb(next)).eq("id", 1);
+        if (error) throw error;
+      } catch (e) {
+        console.error("settings sync failed", e);
+        alert(`Could not save settings: ${e.message || "permission denied"}`);
+      }
+    })();
+  };
 }
 
 const Icon = {
@@ -112,7 +257,18 @@ const Icon = {
   upload: p => <svg viewBox="0 0 24 24" fill="none" width="15" height="15" {...p}><path d="M12 15V3m0 0 4 4m-4-4L8 7M4 20h16" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>,
 };
 
+const ROLE_NAV = {
+  admin: ["dashboard","students","fees","attendance","exams","staff","documents","settings"],
+  accountant: ["dashboard","students","fees","documents"],
+  teacher: ["dashboard","students","attendance","exams"],
+  student: ["dashboard","fees","attendance","exams"],
+  parent: ["dashboard","fees","attendance","exams"],
+};
+
 export default function App() {
+  const [authLoading, setAuthLoading] = useState(true);
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("dashboard");
   const [students, setStudents] = useState([]);
@@ -125,36 +281,59 @@ export default function App() {
   const [fees, setFees] = useState([]);
   const [printContent, setPrintContent] = useState(null);
 
+  // Auth: watch the Supabase session
   useEffect(() => {
-    (async () => {
-      const [s,p,a,cfg,ex,mk,st,f] = await Promise.all([
-        loadKey(KEY.students, []), loadKey(KEY.payments, []), loadKey(KEY.attendance, {}),
-        loadKey(KEY.settings, DEFAULT_SETTINGS), loadKey(KEY.exams, []), loadKey(KEY.marks, {}),
-        loadKey(KEY.staff, []), loadKey(KEY.fees, [])
-      ]);
-      setStudents(s); setPayments(p); setAttendance(a); setSettings({...DEFAULT_SETTINGS,...cfg});
-      setExams(ex); setMarks(mk); setStaff(st); setFees(f); setLoading(false);
-    })();
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthLoading(false); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  const persist = (key, setter) => next => { setter(next); saveKey(key, next); };
-  const setStudentsP = persist(KEY.students,setStudents);
-  const setPaymentsP = persist(KEY.payments,setPayments);
-  const setAttendanceP = persist(KEY.attendance,setAttendance);
-  const setSettingsP = persist(KEY.settings,setSettings);
-  const setExamsP = persist(KEY.exams,setExams);
-  const setMarksP = persist(KEY.marks,setMarks);
-  const setStaffP = persist(KEY.staff,setStaff);
-  const setFeesP = persist(KEY.fees,setFees);
+  // Once logged in, load this user's profile (their role)
+  useEffect(() => {
+    if (!session?.user) { setProfile(null); return; }
+    (async () => {
+      const { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
+      setProfile(data || null);
+    })();
+  }, [session?.user?.id]);
+
+  // Once we know the role, load the data this user is permitted to see (RLS enforces the actual boundary)
+  useEffect(() => {
+    if (!profile) return;
+    setLoading(true);
+    loadAllData().then(d => {
+      setStudents(d.students); setPayments(d.payments); setFees(d.fees); setAttendance(d.attendance);
+      setExams(d.exams); setMarks(d.marks); setStaff(d.staff); setSettings(d.settings);
+      setLoading(false);
+    });
+  }, [profile]);
+
+  const getUserId = () => session?.user?.id;
+  const setStudentsP = useMemo(() => makeArraySync("students", toStudentDb, setStudents), []);
+  const setPaymentsP = useMemo(() => makeArraySync("payments", toPaymentDb, setPayments, getUserId), [session?.user?.id]);
+  const setFeesP = useMemo(() => makeArraySync("fees", toFeeDb, setFees), []);
+  const setStaffP = useMemo(() => makeArraySync("staff", toStaffDb, setStaff), []);
+  const setAttendanceP = useMemo(() => makeAttendanceSync(setAttendance, getUserId), [session?.user?.id]);
+  const setExamsP = useMemo(() => makeExamsSync(setExams, getUserId), [session?.user?.id]);
+  const setMarksP = useMemo(() => makeMarksSync(setMarks), []);
+  const setSettingsP = useMemo(() => makeSettingsSync(setSettings), []);
 
   function requestPrint(node) { setPrintContent(node); setTimeout(() => window.print(), 80); }
 
-  const nav = [
+  const role = profile?.role || "student";
+  const allowedTabs = ROLE_NAV[role] || ["dashboard"];
+  useEffect(() => { if (!allowedTabs.includes(tab)) setTab(allowedTabs[0]); }, [role]);
+
+  const navAll = [
     ["dashboard","Dashboard",Icon.dashboard],["students","Students",Icon.students],["fees","Fees",Icon.fees],
     ["attendance","Attendance",Icon.attendance],["exams","Exams",Icon.exams],["staff","Staff",Icon.staff],
     ["documents","Documents",Icon.docs],["settings","Settings",Icon.settings]
   ];
+  const nav = navAll.filter(([id]) => allowedTabs.includes(id));
 
+  if (authLoading) return <div style={{minHeight:"100vh",display:"grid",placeItems:"center",background:"#F6F3EA",fontFamily:"Inter"}}>Loading…</div>;
+  if (!session) return <Login settings={settings}/>;
+  if (!profile) return <div style={{minHeight:"100vh",display:"grid",placeItems:"center",background:"#F6F3EA",fontFamily:"Inter",padding:20,textAlign:"center"}}>Your account isn't set up with a role yet.<br/>Please ask your administrator to finish setting up your access.<br/><button className="btn ghost" style={{marginTop:16,padding:"8px 14px",borderRadius:7}} onClick={()=>supabase.auth.signOut()}>Sign out</button></div>;
   if (loading) return <div style={{minHeight:"100vh",display:"grid",placeItems:"center",background:"#F6F3EA",fontFamily:"Inter"}}>Opening SELC Management System…</div>;
 
   return <>
@@ -182,13 +361,13 @@ export default function App() {
         .ledger tr{transition:background .15s ease}
         @media(max-width:860px){.sidebar{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;height:62px;flex-direction:row!important;padding:0!important;z-index:50;border-right:0!important;border-top:2px solid #DDA13A}.brand{display:none!important}.side-nav{flex-direction:row!important;justify-content:space-around!important;width:100%}.side-btn{min-width:60px!important;padding:5px!important;flex-direction:column!important;gap:2px!important;font-size:9px!important}.main{margin-left:0!important;padding-bottom:75px}.content{padding:24px 16px 50px!important}.two{grid-template-columns:1fr!important}}
       `}</style>
-      <Sidebar tab={tab} setTab={setTab} settings={settings} nav={nav}/>
+      <Sidebar tab={tab} setTab={setTab} settings={settings} nav={nav} profile={profile} onSignOut={()=>supabase.auth.signOut()}/>
       <main className="main" style={{marginLeft:232,minWidth:0}}>
         {tab==="dashboard" && <Dashboard {...{students,payments,attendance,staff,exams,settings,goTo:setTab,fees}}/>}
-        {tab==="students" && <StudentsView students={students} setStudents={setStudentsP} payments={payments}/>}
-        {tab==="fees" && <FeesView {...{students,payments,setPayments:setPaymentsP,fees,setFees:setFeesP,settings,requestPrint}}/>}
-        {tab==="attendance" && <AttendanceView {...{students,attendance,setAttendance:setAttendanceP}}/>}
-        {tab==="exams" && <ExamsView {...{students,exams,setExams:setExamsP,marks,setMarks:setMarksP,settings,requestPrint}}/>}
+        {tab==="students" && <StudentsView students={students} setStudents={setStudentsP} payments={payments} canEdit={role==="admin"}/>}
+        {tab==="fees" && <FeesView {...{students,payments,setPayments:setPaymentsP,fees,setFees:setFeesP,settings,requestPrint}} canEdit={role==="admin"||role==="accountant"}/>}
+        {tab==="attendance" && <AttendanceView {...{students,attendance,setAttendance:setAttendanceP}} canEdit={role==="admin"||role==="teacher"}/>}
+        {tab==="exams" && <ExamsView {...{students,exams,setExams:setExamsP,marks,setMarks:setMarksP,settings,requestPrint}} canEdit={role==="admin"||role==="teacher"}/>}
         {tab==="staff" && <StaffView staff={staff} setStaff={setStaffP}/>}
         {tab==="documents" && <DocumentsView {...{students,settings,requestPrint,payments,fees}}/>}
         {tab==="settings" && <SettingsView {...{settings,setSettings:setSettingsP,students,setStudents:setStudentsP,payments,attendance,exams,marks,staff,fees}}/>}
@@ -198,7 +377,8 @@ export default function App() {
   </>;
 }
 
-function Sidebar({tab,setTab,settings,nav}) {
+const ROLE_LABEL = { admin:"Administrator", accountant:"Accountant", teacher:"Teacher", student:"Student", parent:"Parent" };
+function Sidebar({tab,setTab,settings,nav,profile,onSignOut}) {
   return <aside className="sidebar" style={{position:"fixed",top:0,left:0,bottom:0,width:232,background:"#0F2544",padding:"24px 15px",borderRight:"3px solid #DDA13A",display:"flex",flexDirection:"column"}}>
     <div className="brand" style={{marginBottom:28,paddingLeft:5}}>
       <div style={{color:"#DDA13A",display:"flex",alignItems:"center",gap:8}}><Icon.cap/><span style={{fontSize:10,letterSpacing:".15em",color:"#9FB0C8"}}>MANAGEMENT SYSTEM</span></div>
@@ -208,7 +388,11 @@ function Sidebar({tab,setTab,settings,nav}) {
     <nav className="side-nav" style={{display:"flex",flexDirection:"column",gap:3}}>
       {nav.map(([id,label,I])=><button key={id} className="side-btn btn" onClick={()=>setTab(id)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 11px",borderRadius:7,background:tab===id?"#DDA13A":"transparent",color:tab===id?"#0F2544":"#C9D3E2",textAlign:"left"}}><I/><span>{label}</span></button>)}
     </nav>
-    <div className="brand" style={{marginTop:"auto",borderTop:"1px solid #1c3357",paddingTop:15,color:"#7F91AC",fontSize:10.5,lineHeight:1.6}}>{settings.director}<br/>{settings.role}<br/>{settings.phone1}</div>
+    <div className="brand" style={{marginTop:"auto",borderTop:"1px solid #1c3357",paddingTop:15,color:"#7F91AC",fontSize:10.5,lineHeight:1.6}}>
+      {profile?.full_name || "Signed in"}
+      <br/><span style={{color:"#DDA13A",fontWeight:700}}>{ROLE_LABEL[profile?.role] || profile?.role}</span>
+      <button className="btn ghost" onClick={onSignOut} style={{marginTop:10,padding:"6px 10px",borderRadius:6,fontSize:11,color:"#C9D3E2",borderColor:"#2c4266",width:"100%"}}>Sign out</button>
+    </div>
   </aside>
 }
 
@@ -290,15 +474,15 @@ function Dashboard({students,payments,attendance,staff,exams,settings,goTo,fees}
   </Page>
 }
 
-function StudentsView({students,setStudents}) {
+function StudentsView({students,setStudents,canEdit=true}) {
   const [q,setQ]=useState(""),[cls,setCls]=useState(""),[modal,setModal]=useState(null);
   const list=students.filter(s=>(!cls||s.class===cls)&&((s.name||"").toLowerCase().includes(q.toLowerCase())||(s.guardian||"").toLowerCase().includes(q.toLowerCase())||(s.admissionNo||"").toLowerCase().includes(q.toLowerCase()))).sort((a,b)=>a.name.localeCompare(b.name));
   function save(data){if(data.id)setStudents(students.map(s=>s.id===data.id?data:s));else setStudents([...students,{...data,id:uid(),admissionNo:data.admissionNo||`SELC-${String(students.length+1).padStart(4,"0")}`,status:"active"}]);setModal(null)}
   function remove(id){if(confirm("Remove this student?"))setStudents(students.filter(s=>s.id!==id))}
-  return <Page eyebrow="Student registry" title="Students" actions={<button className="btn gold" onClick={()=>setModal({})} style={{padding:"10px 16px",borderRadius:7,display:"flex",gap:6,alignItems:"center"}}><Icon.plus/> Add student</button>}>
+  return <Page eyebrow="Student registry" title="Students" actions={canEdit&&<button className="btn gold" onClick={()=>setModal({})} style={{padding:"10px 16px",borderRadius:7,display:"flex",gap:6,alignItems:"center"}}><Icon.plus/> Add student</button>}>
     <div style={{display:"flex",gap:10,marginTop:21,flexWrap:"wrap"}}><div style={{position:"relative",flex:"1 1 260px"}}><Icon.search style={{position:"absolute",left:10,top:9,color:"#9A8F78"}}/><input className="input" placeholder="Search name, guardian or admission no." value={q} onChange={e=>setQ(e.target.value)} style={{paddingLeft:32}}/></div><select className="input" value={cls} onChange={e=>setCls(e.target.value)} style={{width:"auto"}}><option value="">All classes</option>{CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
-    <div className="card" style={{marginTop:17,overflowX:"auto"}}>{!list.length?<Empty>No students match your search.</Empty>:<table className="ledger"><thead><tr><th>Admission No.</th><th>Name</th><th>Class</th><th>Guardian</th><th>Phone</th><th>Status</th><th/></tr></thead><tbody>{list.map(s=><tr key={s.id}><td style={{fontFamily:"JetBrains Mono"}}>{s.admissionNo}</td><td><b>{s.name}</b></td><td>{s.class||"—"}</td><td>{s.guardian||"—"}</td><td>{s.phone||"—"}</td><td><span className="chip" style={{background:s.status==="active"?"#E4F1E9":"#EFE7D2",color:s.status==="active"?"#2F6B4B":"#544A38"}}>{s.status||"active"}</span></td><td><button className="btn ghost" style={{padding:6,borderRadius:5}} onClick={()=>setModal(s)}><Icon.edit/></button> <button className="btn ghost danger" style={{padding:6,borderRadius:5}} onClick={()=>remove(s.id)}><Icon.trash/></button></td></tr>)}</tbody></table>}</div>
-    {modal!==null&&<StudentModal student={modal} onClose={()=>setModal(null)} onSave={save}/>}
+    <div className="card" style={{marginTop:17,overflowX:"auto"}}>{!list.length?<Empty>No students match your search.</Empty>:<table className="ledger"><thead><tr><th>Admission No.</th><th>Name</th><th>Class</th><th>Guardian</th><th>Phone</th><th>Status</th>{canEdit&&<th/>}</tr></thead><tbody>{list.map(s=><tr key={s.id}><td style={{fontFamily:"JetBrains Mono"}}>{s.admissionNo}</td><td><b>{s.name}</b></td><td>{s.class||"—"}</td><td>{s.guardian||"—"}</td><td>{s.phone||"—"}</td><td><span className="chip" style={{background:s.status==="active"?"#E4F1E9":"#EFE7D2",color:s.status==="active"?"#2F6B4B":"#544A38"}}>{s.status||"active"}</span></td>{canEdit&&<td><button className="btn ghost" style={{padding:6,borderRadius:5}} onClick={()=>setModal(s)}><Icon.edit/></button> <button className="btn ghost danger" style={{padding:6,borderRadius:5}} onClick={()=>remove(s.id)}><Icon.trash/></button></td>}</tr>)}</tbody></table>}</div>
+    {canEdit&&modal!==null&&<StudentModal student={modal} onClose={()=>setModal(null)} onSave={save}/>}
   </Page>
 }
 function StudentModal({student,onClose,onSave}) {
@@ -316,39 +500,39 @@ function StudentModal({student,onClose,onSave}) {
   </form></Modal>
 }
 
-function FeesView({students,payments,setPayments,fees,setFees,settings,requestPrint}) {
+function FeesView({students,payments,setPayments,fees,setFees,settings,requestPrint,canEdit=true}) {
   const [modal,setModal]=useState(null),[filter,setFilter]=useState(""),[month,setMonth]=useState(monthLabel());
   const totalCollected=payments.reduce((a,p)=>a+Number(p.amount||0),0);
   function dueFor(s){const charges=fees.filter(f=>f.studentId===s.id&&(!month||f.month===month));const chargeTotal=charges.reduce((a,f)=>a+Number(f.amount||0),0)+(Number(s.monthlyFee||0)-Number(s.discount||0));const paid=payments.filter(p=>p.studentId===s.id&&p.month===month).reduce((a,p)=>a+Number(p.amount||0),0);return {chargeTotal,paid,balance:Math.max(0,chargeTotal-paid),status:paid>=chargeTotal&&chargeTotal>0?"paid":paid>0?"partial":"due"}}
   function addPayment(s,amount,note){const n=payments.length+1;const receipt=`${settings.receiptPrefix}-${new Date().getFullYear()}-${String(n).padStart(5,"0")}`;const p={id:uid(),studentId:s.id,amount:Number(amount),date:todayISO(),month,note,receiptNo:receipt};setPayments([...payments,p]);setModal(null);requestPrint(<ReceiptPrint settings={settings} student={s} payment={p}/>);}
-  return <Page eyebrow="Finance & collections" title="Fees" actions={<button className="btn gold" onClick={()=>setModal({})} style={{padding:"10px 16px",borderRadius:7}}>+ Add charge</button>}>
+  return <Page eyebrow="Finance & collections" title="Fees" actions={canEdit&&<button className="btn gold" onClick={()=>setModal({})} style={{padding:"10px 16px",borderRadius:7}}>+ Add charge</button>}>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:14,marginTop:22}}><Stat label="All-time collected" value={fmtNPR(totalCollected)} accent="#3F7A5D"/><Stat label="Payment entries" value={payments.length} accent="#0F2544"/><Stat label="Current due students" value={students.filter(s=>dueFor(s).status!=="paid").length} accent="#B5514A"/></div>
     <div style={{display:"flex",gap:10,marginTop:20,flexWrap:"wrap"}}><input className="input" style={{width:"auto"}} value={month} onChange={e=>setMonth(e.target.value)} placeholder="Month label e.g. August 2026"/><select className="input" style={{width:"auto"}} value={filter} onChange={e=>setFilter(e.target.value)}><option value="">All classes</option>{CLASSES.map(c=><option key={c}>{c}</option>)}</select></div>
-    <div className="card" style={{marginTop:16,overflowX:"auto"}}><table className="ledger"><thead><tr><th>Student</th><th>Class</th><th>Charge</th><th>Paid</th><th>Balance</th><th>Status</th><th/></tr></thead><tbody>{students.filter(s=>!filter||s.class===filter).sort((a,b)=>a.name.localeCompare(b.name)).map(s=>{const d=dueFor(s);return <tr key={s.id}><td><b>{s.name}</b><small style={{display:"block",color:"#8A7F68"}}>{s.admissionNo}</small></td><td>{s.class||"—"}</td><td>{fmtNPR(d.chargeTotal)}</td><td style={{color:"#3F7A5D",fontWeight:700}}>{fmtNPR(d.paid)}</td><td style={{color:d.balance?"#A8433A":"#3F7A5D",fontWeight:700}}>{fmtNPR(d.balance)}</td><td><span className="chip" style={{background:d.status==="paid"?"#E4F1E9":d.status==="partial"?"#FFF0D3":"#F7E7E5",color:d.status==="paid"?"#2F6B4B":d.status==="partial"?"#8A6200":"#A8433A"}}>{d.status}</span></td><td><button className="btn gold" style={{padding:"6px 10px",borderRadius:5,fontSize:11}} onClick={()=>setModal(s)}>Collect</button></td></tr>})}</tbody></table></div>
+    <div className="card" style={{marginTop:16,overflowX:"auto"}}><table className="ledger"><thead><tr><th>Student</th><th>Class</th><th>Charge</th><th>Paid</th><th>Balance</th><th>Status</th>{canEdit&&<th/>}</tr></thead><tbody>{students.filter(s=>!filter||s.class===filter).sort((a,b)=>a.name.localeCompare(b.name)).map(s=>{const d=dueFor(s);return <tr key={s.id}><td><b>{s.name}</b><small style={{display:"block",color:"#8A7F68"}}>{s.admissionNo}</small></td><td>{s.class||"—"}</td><td>{fmtNPR(d.chargeTotal)}</td><td style={{color:"#3F7A5D",fontWeight:700}}>{fmtNPR(d.paid)}</td><td style={{color:d.balance?"#A8433A":"#3F7A5D",fontWeight:700}}>{fmtNPR(d.balance)}</td><td><span className="chip" style={{background:d.status==="paid"?"#E4F1E9":d.status==="partial"?"#FFF0D3":"#F7E7E5",color:d.status==="paid"?"#2F6B4B":d.status==="partial"?"#8A6200":"#A8433A"}}>{d.status}</span></td>{canEdit&&<td><button className="btn gold" style={{padding:"6px 10px",borderRadius:5,fontSize:11}} onClick={()=>setModal(s)}>Collect</button></td>}</tr>})}</tbody></table></div>
     <div className="card" style={{marginTop:20,overflowX:"auto"}}><div style={{padding:"15px 18px",fontFamily:"Playfair Display",fontWeight:700,color:"#0F2544"}}>Payment history</div><table className="ledger"><thead><tr><th>Receipt</th><th>Date</th><th>Student</th><th>Month</th><th>Amount</th><th/></tr></thead><tbody>{payments.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(p=>{const s=students.find(x=>x.id===p.studentId);return <tr key={p.id}><td style={{fontFamily:"JetBrains Mono"}}>{p.receiptNo||"—"}</td><td>{p.date}</td><td>{s?.name||"Unknown"}</td><td>{p.month}</td><td style={{fontWeight:700,color:"#3F7A5D"}}>{fmtNPR(p.amount)}</td><td><button className="btn ghost" style={{padding:"5px 8px",borderRadius:5}} onClick={()=>requestPrint(<ReceiptPrint settings={settings} student={s||{name:"Unknown"}} payment={p}/>)}><Icon.print/></button></td></tr>})}</tbody></table></div>
-    {modal&&modal.id?<PaymentModal student={modal} month={month} onClose={()=>setModal(null)} onSave={(a,n)=>addPayment(modal,a,n)}/>:modal&&<ChargeModal students={students} month={month} onClose={()=>setModal(null)} onSave={d=>{setFees([...fees,{id:uid(),...d}]);setModal(null)}}/>}
+    {canEdit&&modal&&modal.id?<PaymentModal student={modal} month={month} onClose={()=>setModal(null)} onSave={(a,n)=>addPayment(modal,a,n)}/>:canEdit&&modal&&<ChargeModal students={students} month={month} onClose={()=>setModal(null)} onSave={d=>{setFees([...fees,{id:uid(),...d}]);setModal(null)}}/>}
   </Page>
 }
 function PaymentModal({student,month,onClose,onSave}){const [a,setA]=useState(student.monthlyFee||""),[n,setN]=useState("Tuition — "+month);return <Modal title={`Collect fee — ${student.name}`} onClose={onClose}><form onSubmit={e=>{e.preventDefault();if(a)onSave(a,n)}} style={{display:"grid",gap:13}}><Field label="Amount (Rs.)"><input className="input" autoFocus type="number" value={a} onChange={e=>setA(e.target.value)} required/></Field><Field label="Note"><input className="input" value={n} onChange={e=>setN(e.target.value)}/></Field><button className="btn navy" style={{padding:10,borderRadius:7}}>Save & print receipt</button></form></Modal>}
 function ChargeModal({students,month,onClose,onSave}){const [f,setF]=useState({studentId:students[0]?.id||"",type:"Other",amount:"",month,note:""});const set=k=>e=>setF({...f,[k]:e.target.value});return <Modal title="Add fee charge" onClose={onClose}><form onSubmit={e=>{e.preventDefault();if(f.studentId&&f.amount)onSave(f)}} style={{display:"grid",gap:13}}><Field label="Student"><select className="input" value={f.studentId} onChange={set("studentId")}>{students.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></Field><Field label="Charge type"><select className="input" value={f.type} onChange={set("type")}>{FEE_TYPES.map(x=><option key={x}>{x}</option>)}</select></Field><Field label="Amount"><input className="input" type="number" value={f.amount} onChange={set("amount")} required/></Field><Field label="Month"><input className="input" value={f.month} onChange={set("month")}/></Field><Field label="Note"><input className="input" value={f.note} onChange={set("note")}/></Field><button className="btn navy" style={{padding:10,borderRadius:7}}>Save charge</button></form></Modal>}
 
-function AttendanceView({students,attendance,setAttendance}) {
+function AttendanceView({students,attendance,setAttendance,canEdit=true}) {
   const [date,setDate]=useState(todayISO()),[cls,setCls]=useState("");
   const list=students.filter(s=>!cls||s.class===cls);
-  function mark(id,status){const day={...(attendance[date]||{})};const c={...(day[cls||"all"]||{})};c[id]=status;day[cls||"all"]=c;setAttendance({...attendance,[date]:day})}
-  return <Page eyebrow="Daily records" title="Attendance"><div style={{display:"flex",gap:10,marginTop:21}}><input className="input" style={{width:"auto"}} type="date" value={date} onChange={e=>setDate(e.target.value)}/><select className="input" style={{width:"auto"}} value={cls} onChange={e=>setCls(e.target.value)}><option value="">All classes</option>{CLASSES.map(c=><option key={c}>{c}</option>)}</select></div><div className="card" style={{marginTop:16,overflowX:"auto"}}><table className="ledger"><thead><tr><th>Student</th><th>Class</th><th>Status</th></tr></thead><tbody>{list.sort((a,b)=>a.name.localeCompare(b.name)).map(s=>{const st=(attendance[date]?.[cls||"all"]||{})[s.id];return <tr key={s.id}><td><b>{s.name}</b></td><td>{s.class}</td><td><button className="btn" style={{padding:"6px 11px",borderRadius:6,marginRight:5,background:st==="present"?"#3F7A5D":"#EFE7D2",color:st==="present"?"#fff":"#544A38"}} onClick={()=>mark(s.id,"present")}>Present</button><button className="btn" style={{padding:"6px 11px",borderRadius:6,background:st==="absent"?"#B5514A":"#EFE7D2",color:st==="absent"?"#fff":"#544A38"}} onClick={()=>mark(s.id,"absent")}>Absent</button></td></tr>})}</tbody></table></div></Page>
+  function mark(id,status){const day={...(attendance[date]||{}),[id]:status};setAttendance({...attendance,[date]:day})}
+  return <Page eyebrow="Daily records" title="Attendance"><div style={{display:"flex",gap:10,marginTop:21}}><input className="input" style={{width:"auto"}} type="date" value={date} onChange={e=>setDate(e.target.value)}/><select className="input" style={{width:"auto"}} value={cls} onChange={e=>setCls(e.target.value)}><option value="">All classes</option>{CLASSES.map(c=><option key={c}>{c}</option>)}</select></div><div className="card" style={{marginTop:16,overflowX:"auto"}}><table className="ledger"><thead><tr><th>Student</th><th>Class</th><th>Status</th></tr></thead><tbody>{list.sort((a,b)=>a.name.localeCompare(b.name)).map(s=>{const st=(attendance[date]||{})[s.id];return <tr key={s.id}><td><b>{s.name}</b></td><td>{s.class}</td><td>{canEdit?<><button className="btn" style={{padding:"6px 11px",borderRadius:6,marginRight:5,background:st==="present"?"#3F7A5D":"#EFE7D2",color:st==="present"?"#fff":"#544A38"}} onClick={()=>mark(s.id,"present")}>Present</button><button className="btn" style={{padding:"6px 11px",borderRadius:6,background:st==="absent"?"#B5514A":"#EFE7D2",color:st==="absent"?"#fff":"#544A38"}} onClick={()=>mark(s.id,"absent")}>Absent</button></>:<span className="chip" style={{background:st==="present"?"#E4F1E9":st==="absent"?"#F7E7E5":"#EFE7D2",color:st==="present"?"#2F6B4B":st==="absent"?"#A8433A":"#544A38"}}>{st||"not marked"}</span>}</td></tr>})}</tbody></table></div></Page>
 }
 
-function ExamsView({students,exams,setExams,marks,setMarks,settings,requestPrint}) {
+function ExamsView({students,exams,setExams,marks,setMarks,settings,requestPrint,canEdit=true}) {
   const [modal,setModal]=useState(false),[selected,setSelected]=useState(exams[0]?.id||""),[cls,setCls]=useState("");
   useEffect(()=>{if(!selected&&exams[0])setSelected(exams[0].id)},[exams]);
   const exam=exams.find(e=>e.id===selected);
   const roster=students.filter(s=>!cls||s.class===cls).sort((a,b)=>a.name.localeCompare(b.name));
   function update(id,sub,val){const m={...marks,[exam.id]:{...(marks[exam.id]||{})}};m[exam.id][id]={...(m[exam.id][id]||{}),[sub]:val===""?undefined:Number(val)};setMarks(m)}
   function result(id){const row=marks[exam?.id]?.[id]||{};const max=(exam?.subjects||[]).reduce((a,s)=>a+Number(s.max||0),0);const total=(exam?.subjects||[]).reduce((a,s)=>a+Number(row[s.id]||0),0);return {row,max,total,pct:max?total/max*100:0}}
-  return <Page eyebrow="Academic assessment" title="Exams" actions={<button className="btn gold" style={{padding:"10px 16px",borderRadius:7}} onClick={()=>setModal(true)}>+ New exam</button>}>
-    {!exams.length?<div className="card" style={{marginTop:20}}><Empty>No exams created yet.</Empty></div>:<><div style={{display:"flex",gap:10,marginTop:21,flexWrap:"wrap"}}><select className="input" style={{width:"auto"}} value={selected} onChange={e=>setSelected(e.target.value)}>{exams.map(e=><option key={e.id} value={e.id}>{e.name} — {e.date}</option>)}</select><select className="input" style={{width:"auto"}} value={cls} onChange={e=>setCls(e.target.value)}><option value="">All classes</option>{CLASSES.map(c=><option key={c}>{c}</option>)}</select></div><div className="card" style={{marginTop:16,overflowX:"auto"}}><table className="ledger"><thead><tr><th>Student</th>{exam.subjects.map(s=><th key={s.id}>{s.name}/{s.max}</th>)}<th>Total</th><th>%</th><th>Grade</th><th/></tr></thead><tbody>{roster.map(s=>{const r=result(s.id),g=gradeFor(r.pct);return <tr key={s.id}><td><b>{s.name}</b></td>{exam.subjects.map(sub=><td key={sub.id}><input className="input" style={{width:62,padding:5}} type="number" min="0" max={sub.max} value={r.row[sub.id]??""} onChange={e=>update(s.id,sub.id,e.target.value)}/></td>)}<td>{r.total}/{r.max}</td><td>{r.pct.toFixed(1)}%</td><td><span className="chip" style={{background:"#EFE7D2"}}>{g.g}</span></td><td><button className="btn ghost" style={{padding:"6px 9px",borderRadius:5}} onClick={()=>requestPrint(<ReportCardPrint settings={settings} student={s} exam={exam} result={r} grade={g}/>)}>Print</button></td></tr>})}</tbody></table></div></>}
-    {modal&&<ExamModal onClose={()=>setModal(false)} onSave={d=>{const e={id:uid(),...d};setExams([...exams,e]);setSelected(e.id);setModal(false)}}/>}
+  return <Page eyebrow="Academic assessment" title="Exams" actions={canEdit&&<button className="btn gold" style={{padding:"10px 16px",borderRadius:7}} onClick={()=>setModal(true)}>+ New exam</button>}>
+    {!exams.length?<div className="card" style={{marginTop:20}}><Empty>No exams created yet.</Empty></div>:<><div style={{display:"flex",gap:10,marginTop:21,flexWrap:"wrap"}}><select className="input" style={{width:"auto"}} value={selected} onChange={e=>setSelected(e.target.value)}>{exams.map(e=><option key={e.id} value={e.id}>{e.name} — {e.date}</option>)}</select><select className="input" style={{width:"auto"}} value={cls} onChange={e=>setCls(e.target.value)}><option value="">All classes</option>{CLASSES.map(c=><option key={c}>{c}</option>)}</select></div><div className="card" style={{marginTop:16,overflowX:"auto"}}><table className="ledger"><thead><tr><th>Student</th>{exam.subjects.map(s=><th key={s.id}>{s.name}/{s.max}</th>)}<th>Total</th><th>%</th><th>Grade</th><th/></tr></thead><tbody>{roster.map(s=>{const r=result(s.id),g=gradeFor(r.pct);return <tr key={s.id}><td><b>{s.name}</b></td>{exam.subjects.map(sub=><td key={sub.id}>{canEdit?<input className="input" style={{width:62,padding:5}} type="number" min="0" max={sub.max} value={r.row[sub.id]??""} onChange={e=>update(s.id,sub.id,e.target.value)}/>:<span>{r.row[sub.id]??"—"}</span>}</td>)}<td>{r.total}/{r.max}</td><td>{r.pct.toFixed(1)}%</td><td><span className="chip" style={{background:"#EFE7D2"}}>{g.g}</span></td><td><button className="btn ghost" style={{padding:"6px 9px",borderRadius:5}} onClick={()=>requestPrint(<ReportCardPrint settings={settings} student={s} exam={exam} result={r} grade={g}/>)}>Print</button></td></tr>})}</tbody></table></div></>}
+    {canEdit&&modal&&<ExamModal onClose={()=>setModal(false)} onSave={d=>{const e={id:uid(),...d};setExams([...exams,e]);setSelected(e.id);setModal(false)}}/>}
   </Page>
 }
 function ExamModal({onClose,onSave}){const [name,setName]=useState(""),[date,setDate]=useState(todayISO()),[subs,setSubs]=useState([{id:uid(),name:"English",max:100},{id:uid(),name:"Mathematics",max:100}]);const add=()=>setSubs([...subs,{id:uid(),name:"",max:100}]);return <Modal title="New exam" onClose={onClose}><form onSubmit={e=>{e.preventDefault();const clean=subs.filter(s=>s.name.trim());if(name.trim()&&clean.length)onSave({name,date,subjects:clean})}} style={{display:"grid",gap:14}}><Field label="Exam name"><input className="input" autoFocus value={name} onChange={e=>setName(e.target.value)} required/></Field><Field label="Date"><input className="input" type="date" value={date} onChange={e=>setDate(e.target.value)}/></Field><div>{subs.map(s=><div key={s.id} style={{display:"flex",gap:7,marginBottom:7}}><input className="input" placeholder="Subject" value={s.name} onChange={e=>setSubs(subs.map(x=>x.id===s.id?{...x,name:e.target.value}:x))}/><input className="input" style={{width:90}} type="number" value={s.max} onChange={e=>setSubs(subs.map(x=>x.id===s.id?{...x,max:e.target.value}:x))}/><button type="button" className="btn ghost" onClick={()=>setSubs(subs.filter(x=>x.id!==s.id))}>✕</button></div>)}<button type="button" className="btn ghost" style={{padding:7,borderRadius:6}} onClick={add}>+ Add subject</button></div><button className="btn navy" style={{padding:10,borderRadius:7}}>Create exam</button></form></Modal>}
