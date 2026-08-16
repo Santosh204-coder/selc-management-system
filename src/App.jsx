@@ -166,6 +166,20 @@ export default function App() {
         .ledger{border-collapse:collapse;width:100%}.ledger th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#7A6F5C;padding:10px 12px;border-bottom:2px solid #0F2544;text-align:left}.ledger td{padding:11px 12px;border-bottom:1px solid #E4DCC8;font-size:13px}.ledger tr:hover{background:#FBF8F0}
         .input{width:100%;padding:9px 11px;border-radius:7px;border:1px solid #D8CDAF;font:13px Inter;background:#FCFAF3}.chip{display:inline-block;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700}
         .print-only{display:none}@media print{.app{display:none!important}.print-only{display:block!important}}
+        @keyframes fadeInUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes pulseDot{0%{box-shadow:0 0 0 0 rgba(63,122,93,.55)}70%{box-shadow:0 0 0 8px rgba(63,122,93,0)}100%{box-shadow:0 0 0 0 rgba(63,122,93,0)}}
+        @keyframes shimmer{0%{background-position:-200px 0}100%{background-position:200px 0}}
+        .stat-card{opacity:0;animation:fadeInUp .55s cubic-bezier(.2,.8,.2,1) forwards;transition:transform .22s ease,box-shadow .22s ease;will-change:transform}
+        .stat-card:hover{transform:translateY(-5px);box-shadow:0 10px 24px -8px rgba(15,37,68,.28)}
+        .fade-row{opacity:0;animation:fadeInUp .5s ease forwards}
+        .bar-fill{transition:width 1.1s cubic-bezier(.16,1,.3,1)}
+        .live-dot{width:8px;height:8px;border-radius:50%;background:#3F7A5D;display:inline-block;animation:pulseDot 1.8s infinite}
+        .btn{transition:transform .15s ease,box-shadow .15s ease,filter .15s ease}
+        .btn:hover{transform:translateY(-1px);filter:brightness(1.06)}
+        .btn:active{transform:translateY(0px) scale(.98)}
+        .side-btn{transition:background .18s ease,transform .18s ease}
+        .side-btn:hover{transform:translateX(2px)}
+        .ledger tr{transition:background .15s ease}
         @media(max-width:860px){.sidebar{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;height:62px;flex-direction:row!important;padding:0!important;z-index:50;border-right:0!important;border-top:2px solid #DDA13A}.brand{display:none!important}.side-nav{flex-direction:row!important;justify-content:space-around!important;width:100%}.side-btn{min-width:60px!important;padding:5px!important;flex-direction:column!important;gap:2px!important;font-size:9px!important}.main{margin-left:0!important;padding-bottom:75px}.content{padding:24px 16px 50px!important}.two{grid-template-columns:1fr!important}}
       `}</style>
       <Sidebar tab={tab} setTab={setTab} settings={settings} nav={nav}/>
@@ -200,14 +214,37 @@ function Sidebar({tab,setTab,settings,nav}) {
 
 function Page({eyebrow,title,children,actions}) {
   return <div className="content" style={{padding:"30px 36px 60px"}}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:20,flexWrap:"wrap"}}>
+    <div className="fade-row" style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:20,flexWrap:"wrap"}}>
       <div><div style={{fontSize:11,letterSpacing:".14em",color:"#B5924A",fontWeight:700,textTransform:"uppercase"}}>{eyebrow}</div><div style={{fontFamily:"Playfair Display",fontWeight:800,fontSize:26,color:"#0F2544",marginTop:2}}>{title}</div></div>
       {actions}
     </div>{children}
   </div>
 }
-function Stat({label,value,accent="#0F2544",onClick}) {
-  return <div className="card" onClick={onClick} style={{padding:"15px 17px",borderTop:`3px solid ${accent}`,cursor:onClick?"pointer":"default"}}><div style={{fontSize:10.5,textTransform:"uppercase",letterSpacing:".05em",color:"#8A7F68",fontWeight:700}}>{label}</div><div style={{fontFamily:"Playfair Display",fontSize:26,fontWeight:700,color:"#0F2544",marginTop:4}}>{value}</div></div>
+function AnimatedNumber({value,format,duration=850}) {
+  const [display,setDisplay]=useState(0);
+  const target=Number(value)||0;
+  useEffect(()=>{
+    let raf,start=null;
+    const from=display;
+    function step(ts){
+      if(start===null)start=ts;
+      const p=Math.min((ts-start)/duration,1);
+      const eased=1-Math.pow(1-p,3);
+      setDisplay(from+(target-from)*eased);
+      if(p<1)raf=requestAnimationFrame(step);else setDisplay(target);
+    }
+    raf=requestAnimationFrame(step);
+    return ()=>cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[target]);
+  const rounded=Math.round(display);
+  return <>{format?format(rounded):rounded}</>;
+}
+function Stat({label,value,numeric,format,accent="#0F2544",onClick,delay=0,live=false}) {
+  return <div className="card stat-card" onClick={onClick} style={{padding:"15px 17px",borderTop:`3px solid ${accent}`,cursor:onClick?"pointer":"default",animationDelay:`${delay}ms`}}>
+    <div style={{fontSize:10.5,textTransform:"uppercase",letterSpacing:".05em",color:"#8A7F68",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>{live&&<span className="live-dot"/>}{label}</div>
+    <div style={{fontFamily:"Playfair Display",fontSize:26,fontWeight:700,color:"#0F2544",marginTop:4}}>{numeric!=null?<AnimatedNumber value={numeric} format={format}/>:value}</div>
+  </div>
 }
 function Empty({children}) { return <div style={{padding:28,color:"#9A8F78",fontSize:13,fontStyle:"italic"}}>{children}</div> }
 function Modal({title,onClose,children,wide=false}) {
@@ -215,6 +252,17 @@ function Modal({title,onClose,children,wide=false}) {
 }
 function Field({label,children,span=1}) { return <label style={{gridColumn:span===2?"1/-1":"auto",fontSize:12,fontWeight:600,color:"#544A38"}}><span style={{display:"block",marginBottom:5}}>{label}</span>{children}</label> }
 
+function ClassBar({label,count,total,delay=0}) {
+  const [w,setW]=useState(0);
+  useEffect(()=>{const t=setTimeout(()=>setW(total?count/total*100:0),80+delay);return ()=>clearTimeout(t)},[count,total,delay]);
+  return <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}>
+    <div style={{width:62,fontSize:12,fontWeight:600}}>{label}</div>
+    <div style={{flex:1,height:9,borderRadius:6,background:"#EFE7D2",overflow:"hidden"}}>
+      <div className="bar-fill" style={{width:`${w}%`,height:"100%",background:"linear-gradient(90deg,#0F2544,#1c3a63)",borderRadius:6}}/>
+    </div>
+    <b style={{fontSize:12}}><AnimatedNumber value={count}/></b>
+  </div>
+}
 function Dashboard({students,payments,attendance,staff,exams,settings,goTo,fees}) {
   const today=todayISO(), todayMarks=Object.values(attendance[today]||{}).flatMap(x=>Object.values(x||{}));
   const present=todayMarks.filter(x=>x==="present").length;
@@ -224,19 +272,19 @@ function Dashboard({students,payments,attendance,staff,exams,settings,goTo,fees}
   const byClass=students.reduce((m,s)=>(m[s.class]=(m[s.class]||0)+1,m),{});
   return <Page eyebrow={settings.tagline} title={`Dashboard — ${settings.academicYear}`}>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:15,marginTop:24}}>
-      <Stat label="Total students" value={students.length} onClick={()=>goTo("students")}/>
-      <Stat label="Present today" value={todayMarks.length?`${present}/${todayMarks.length}`:"—"} accent="#3F7A5D" onClick={()=>goTo("attendance")}/>
-      <Stat label="Collected" value={fmtNPR(collected)} accent="#3F7A5D" onClick={()=>goTo("fees")}/>
-      <Stat label="Estimated outstanding" value={fmtNPR(outstanding)} accent="#B5514A" onClick={()=>goTo("fees")}/>
-      <Stat label="Exams" value={exams.length} accent="#DDA13A" onClick={()=>goTo("exams")}/>
-      <Stat label="Staff" value={staff.length} accent="#7A5FA0" onClick={()=>goTo("staff")}/>
+      <Stat label="Total students" numeric={students.length} onClick={()=>goTo("students")} delay={0}/>
+      <Stat label="Present today" value={todayMarks.length?`${present}/${todayMarks.length}`:"—"} accent="#3F7A5D" onClick={()=>goTo("attendance")} delay={60} live={todayMarks.length>0}/>
+      <Stat label="Collected" numeric={collected} format={fmtNPR} accent="#3F7A5D" onClick={()=>goTo("fees")} delay={120}/>
+      <Stat label="Estimated outstanding" numeric={outstanding} format={fmtNPR} accent="#B5514A" onClick={()=>goTo("fees")} delay={180}/>
+      <Stat label="Exams" numeric={exams.length} accent="#DDA13A" onClick={()=>goTo("exams")} delay={240}/>
+      <Stat label="Staff" numeric={staff.length} accent="#7A5FA0" onClick={()=>goTo("staff")} delay={300}/>
     </div>
     <div className="two" style={{display:"grid",gridTemplateColumns:"1.25fr 1fr",gap:18,marginTop:24}}>
-      <div className="card" style={{padding:20}}><h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544"}}>Class strength</h3>
-        {students.length===0?<Empty>No students yet.</Empty>:CLASSES.filter(c=>byClass[c]).map(c=><div key={c} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}><div style={{width:62,fontSize:12,fontWeight:600}}>{c}</div><div style={{flex:1,height:9,borderRadius:6,background:"#EFE7D2"}}><div style={{width:`${byClass[c]/students.length*100}%`,height:"100%",background:"#0F2544",borderRadius:6}}/></div><b style={{fontSize:12}}>{byClass[c]}</b></div>)}
+      <div className="card fade-row" style={{padding:20,animationDelay:"360ms"}}><h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544"}}>Class strength</h3>
+        {students.length===0?<Empty>No students yet.</Empty>:CLASSES.filter(c=>byClass[c]).map((c,i)=><ClassBar key={c} label={c} count={byClass[c]} total={students.length} delay={i*70}/>)}
       </div>
-      <div className="card" style={{padding:20}}><h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544"}}>Recent payments</h3>
-        {payments.length===0?<Empty>No payments yet.</Empty>:payments.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map(p=>{const s=students.find(x=>x.id===p.studentId);return <div key={p.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #EFE7D2",fontSize:12.5}}><span>{s?.name||"Unknown"}<small style={{display:"block",color:"#9A8F78"}}>{p.date} · {p.receiptNo||"—"}</small></span><b style={{color:"#3F7A5D"}}>{fmtNPR(p.amount)}</b></div>})}
+      <div className="card fade-row" style={{padding:20,animationDelay:"420ms"}}><h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544"}}>Recent payments</h3>
+        {payments.length===0?<Empty>No payments yet.</Empty>:payments.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map((p,i)=>{const s=students.find(x=>x.id===p.studentId);return <div key={p.id} className="fade-row" style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #EFE7D2",fontSize:12.5,animationDelay:`${460+i*60}ms`}}><span>{s?.name||"Unknown"}<small style={{display:"block",color:"#9A8F78"}}>{p.date} · {p.receiptNo||"—"}</small></span><b style={{color:"#3F7A5D"}}>{fmtNPR(p.amount)}</b></div>})}
       </div>
     </div>
   </Page>
