@@ -363,7 +363,7 @@ export default function App() {
       `}</style>
       <Sidebar tab={tab} setTab={setTab} settings={settings} nav={nav} profile={profile} onSignOut={()=>supabase.auth.signOut()}/>
       <main className="main" style={{marginLeft:232,minWidth:0}}>
-        {tab==="dashboard" && <Dashboard {...{students,payments,attendance,staff,exams,settings,goTo:setTab,fees}}/>}
+        {tab==="dashboard" && <Dashboard {...{students,payments,attendance,staff,exams,settings,goTo:setTab,fees,profile}}/>}
         {tab==="students" && <StudentsView students={students} setStudents={setStudentsP} payments={payments} canEdit={role==="admin"}/>}
         {tab==="fees" && <FeesView {...{students,payments,setPayments:setPaymentsP,fees,setFees:setFeesP,settings,requestPrint}} canEdit={role==="admin"||role==="accountant"}/>}
         {tab==="attendance" && <AttendanceView {...{students,attendance,setAttendance:setAttendanceP}} canEdit={role==="admin"||role==="teacher"}/>}
@@ -447,15 +447,85 @@ function ClassBar({label,count,total,delay=0}) {
     <b style={{fontSize:12}}><AnimatedNumber value={count}/></b>
   </div>
 }
-function Dashboard({students,payments,attendance,staff,exams,settings,goTo,fees}) {
-  const today=todayISO(), todayMarks=Object.values(attendance[today]||{}).flatMap(x=>Object.values(x||{}));
+
+function DonutChart({segments,size=150,thickness=18,centerLabel,centerSub}) {
+  // segments: [{value, color}]
+  const [animate,setAnimate]=useState(false);
+  useEffect(()=>{const t=setTimeout(()=>setAnimate(true),120);return ()=>clearTimeout(t)},[]);
+  const total=segments.reduce((a,s)=>a+s.value,0)||1;
+  const r=(size-thickness)/2, c=2*Math.PI*r;
+  let offset=0;
+  return <div style={{position:"relative",width:size,height:size,margin:"0 auto"}}>
+    <svg width={size} height={size} style={{transform:"rotate(-90deg)"}}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#EFE7D2" strokeWidth={thickness}/>
+      {segments.map((s,i)=>{
+        const frac=s.value/total;
+        const dash=animate?frac*c:0;
+        const el=<circle key={i} cx={size/2} cy={size/2} r={r} fill="none" stroke={s.color} strokeWidth={thickness}
+          strokeDasharray={`${dash} ${c-dash}`} strokeDashoffset={-offset}
+          style={{transition:"stroke-dasharray 1.1s cubic-bezier(.16,1,.3,1)",transitionDelay:`${i*150}ms`}} strokeLinecap="butt"/>;
+        offset+=frac*c;
+        return el;
+      })}
+    </svg>
+    <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+      <div style={{fontFamily:"Playfair Display",fontWeight:800,fontSize:19,color:"#0F2544"}}>{centerLabel}</div>
+      <div style={{fontSize:10.5,color:"#9A8F78",fontWeight:600}}>{centerSub}</div>
+    </div>
+  </div>
+}
+
+function TrendBars({data,height=90}) {
+  // data: [{label, value}]
+  const max=Math.max(1,...data.map(d=>d.value));
+  return <div style={{display:"flex",alignItems:"flex-end",gap:8,height,marginTop:6}}>
+    {data.map((d,i)=><TrendBar key={i} d={d} max={max} height={height} delay={i*70}/>)}
+  </div>
+}
+function TrendBar({d,max,height,delay}) {
+  const [h,setH]=useState(0);
+  useEffect(()=>{const t=setTimeout(()=>setH(max?d.value/max*100:0),100+delay);return ()=>clearTimeout(t)},[d.value,max,delay]);
+  return <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
+    <div style={{width:"100%",height:height-24,display:"flex",alignItems:"flex-end"}}>
+      <div className="bar-fill" style={{width:"100%",height:`${h}%`,minHeight:h>0?4:0,background:"linear-gradient(180deg,#DDA13A,#B5924A)",borderRadius:"5px 5px 2px 2px"}}/>
+    </div>
+    <div style={{fontSize:9.5,color:"#9A8F78",fontWeight:700}}>{d.label}</div>
+  </div>
+}
+
+const GREETINGS = h => h<12?"Good morning":h<17?"Good afternoon":"Good evening";
+function Dashboard({students,payments,attendance,staff,exams,settings,goTo,fees,profile}) {
+  const today=todayISO(), todayMarks=Object.values(attendance[today]||{});
   const present=todayMarks.filter(x=>x==="present").length;
   const collected=payments.reduce((a,p)=>a+Number(p.amount||0),0);
   const expected=students.reduce((a,s)=>a+Number(s.monthlyFee||0),0);
   const outstanding=Math.max(0,expected-collected);
   const byClass=students.reduce((m,s)=>(m[s.class]=(m[s.class]||0)+1,m),{});
+
+  const last7=useMemo(()=>{
+    const days=[];
+    for(let i=6;i>=0;i--){
+      const d=new Date(); d.setDate(d.getDate()-i);
+      const iso=d.toISOString().slice(0,10);
+      const marks=Object.values(attendance[iso]||{});
+      days.push({label:d.toLocaleDateString("en-US",{weekday:"short"})[0],value:marks.filter(x=>x==="present").length});
+    }
+    return days;
+  },[attendance]);
+
+  const activity=useMemo(()=>{
+    const items=[];
+    payments.forEach(p=>{const s=students.find(x=>x.id===p.studentId);items.push({type:"payment",date:p.date,text:`${s?.name||"Unknown"} paid ${fmtNPR(p.amount)}`,color:"#3F7A5D"});});
+    exams.forEach(e=>items.push({type:"exam",date:e.date||"",text:`Exam "${e.name}" created`,color:"#DDA13A"}));
+    return items.filter(x=>x.date).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
+  },[payments,exams,students]);
+
+  const hour=new Date().getHours();
   return <Page eyebrow={settings.tagline} title={`Dashboard — ${settings.academicYear}`}>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:15,marginTop:24}}>
+    <div className="fade-row" style={{marginTop:2,fontSize:14,color:"#544A38"}}>
+      {GREETINGS(hour)}{profile?.full_name?`, ${profile.full_name.split(" ")[0]}`:""} — here's what's happening today.
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:15,marginTop:18}}>
       <Stat label="Total students" numeric={students.length} onClick={()=>goTo("students")} delay={0}/>
       <Stat label="Present today" value={todayMarks.length?`${present}/${todayMarks.length}`:"—"} accent="#3F7A5D" onClick={()=>goTo("attendance")} delay={60} live={todayMarks.length>0}/>
       <Stat label="Collected" numeric={collected} format={fmtNPR} accent="#3F7A5D" onClick={()=>goTo("fees")} delay={120}/>
@@ -463,12 +533,44 @@ function Dashboard({students,payments,attendance,staff,exams,settings,goTo,fees}
       <Stat label="Exams" numeric={exams.length} accent="#DDA13A" onClick={()=>goTo("exams")} delay={240}/>
       <Stat label="Staff" numeric={staff.length} accent="#7A5FA0" onClick={()=>goTo("staff")} delay={300}/>
     </div>
-    <div className="two" style={{display:"grid",gridTemplateColumns:"1.25fr 1fr",gap:18,marginTop:24}}>
-      <div className="card fade-row" style={{padding:20,animationDelay:"360ms"}}><h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544"}}>Class strength</h3>
+
+    <div className="two" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1.1fr",gap:18,marginTop:22}}>
+      <div className="card fade-row" style={{padding:20,animationDelay:"360ms"}}>
+        <h3 style={{fontFamily:"Playfair Display",margin:"0 0 10px",color:"#0F2544",fontSize:16}}>Fee collection</h3>
+        <DonutChart
+          segments={[{value:collected,color:"#3F7A5D"},{value:outstanding,color:"#EFD9B0"}]}
+          centerLabel={expected?`${Math.round(collected/expected*100)}%`:"—"}
+          centerSub="collected"
+        />
+        <div style={{display:"flex",justifyContent:"center",gap:16,marginTop:12,fontSize:11}}>
+          <span style={{color:"#3F7A5D",fontWeight:700}}>● Collected</span>
+          <span style={{color:"#B5924A",fontWeight:700}}>● Outstanding</span>
+        </div>
+      </div>
+
+      <div className="card fade-row" style={{padding:20,animationDelay:"420ms"}}>
+        <h3 style={{fontFamily:"Playfair Display",margin:"0 0 4px",color:"#0F2544",fontSize:16}}>Attendance, last 7 days</h3>
+        <div style={{fontSize:11,color:"#9A8F78",marginBottom:4}}>Students marked present each day</div>
+        <TrendBars data={last7}/>
+      </div>
+
+      <div className="card fade-row" style={{padding:20,animationDelay:"480ms"}}>
+        <h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544",fontSize:16}}>Recent activity</h3>
+        {activity.length===0?<Empty>Nothing recorded yet.</Empty>:activity.map((a,i)=>
+          <div key={i} className="fade-row" style={{display:"flex",alignItems:"flex-start",gap:9,marginBottom:11,animationDelay:`${520+i*60}ms`}}>
+            <span style={{width:7,height:7,borderRadius:"50%",background:a.color,marginTop:5,flexShrink:0}}/>
+            <div style={{fontSize:12.5}}>{a.text}<div style={{fontSize:10.5,color:"#9A8F78"}}>{a.date}</div></div>
+          </div>
+        )}
+      </div>
+    </div>
+
+    <div className="two" style={{display:"grid",gridTemplateColumns:"1.25fr 1fr",gap:18,marginTop:18}}>
+      <div className="card fade-row" style={{padding:20,animationDelay:"540ms"}}><h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544"}}>Class strength</h3>
         {students.length===0?<Empty>No students yet.</Empty>:CLASSES.filter(c=>byClass[c]).map((c,i)=><ClassBar key={c} label={c} count={byClass[c]} total={students.length} delay={i*70}/>)}
       </div>
-      <div className="card fade-row" style={{padding:20,animationDelay:"420ms"}}><h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544"}}>Recent payments</h3>
-        {payments.length===0?<Empty>No payments yet.</Empty>:payments.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map((p,i)=>{const s=students.find(x=>x.id===p.studentId);return <div key={p.id} className="fade-row" style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #EFE7D2",fontSize:12.5,animationDelay:`${460+i*60}ms`}}><span>{s?.name||"Unknown"}<small style={{display:"block",color:"#9A8F78"}}>{p.date} · {p.receiptNo||"—"}</small></span><b style={{color:"#3F7A5D"}}>{fmtNPR(p.amount)}</b></div>})}
+      <div className="card fade-row" style={{padding:20,animationDelay:"600ms"}}><h3 style={{fontFamily:"Playfair Display",margin:"0 0 15px",color:"#0F2544"}}>Recent payments</h3>
+        {payments.length===0?<Empty>No payments yet.</Empty>:payments.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map((p,i)=>{const s=students.find(x=>x.id===p.studentId);return <div key={p.id} className="fade-row" style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #EFE7D2",fontSize:12.5,animationDelay:`${640+i*60}ms`}}><span>{s?.name||"Unknown"}<small style={{display:"block",color:"#9A8F78"}}>{p.date} · {p.receiptNo||"—"}</small></span><b style={{color:"#3F7A5D"}}>{fmtNPR(p.amount)}</b></div>})}
       </div>
     </div>
   </Page>
