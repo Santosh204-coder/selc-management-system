@@ -359,8 +359,13 @@ export default function App() {
         .side-btn{transition:background .18s ease,transform .18s ease}
         .side-btn:hover{transform:translateX(2px)}
         .ledger tr{transition:background .15s ease}
-        @media(max-width:860px){.sidebar{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;height:62px;flex-direction:row!important;padding:0!important;z-index:50;border-right:0!important;border-top:2px solid #DDA13A}.brand{display:none!important}.side-nav{flex-direction:row!important;justify-content:space-around!important;width:100%}.side-btn{min-width:60px!important;padding:5px!important;flex-direction:column!important;gap:2px!important;font-size:9px!important}.main{margin-left:0!important;padding-bottom:75px}.content{padding:24px 16px 50px!important}.two{grid-template-columns:1fr!important}}
+        @media(max-width:860px){.sidebar{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;height:62px;flex-direction:row!important;padding:0!important;z-index:50;border-right:0!important;border-top:2px solid #DDA13A}.brand{display:none!important}.side-nav{flex-direction:row!important;justify-content:space-around!important;width:100%}.side-btn{min-width:60px!important;padding:5px!important;flex-direction:column!important;gap:2px!important;font-size:9px!important}.main{margin-left:0!important;padding-bottom:75px}.content{padding:24px 16px 50px!important}.two{grid-template-columns:1fr!important}.mobile-account-btn{display:flex!important}}
+        .mobile-account-btn{display:none;position:fixed;top:14px;right:14px;z-index:60;width:38px;height:38px;border-radius:50%;background:#0F2544;color:#DDA13A;border:2px solid #DDA13A;align-items:center;justify-content:center;font-weight:800;font-family:"Playfair Display";font-size:14px;cursor:pointer;box-shadow:0 6px 16px -4px rgba(15,37,68,.4)}
+        .mobile-account-btn:active{transform:scale(.94)}
       `}</style>
+      <button className="mobile-account-btn" onClick={()=>{ if(confirm(`Signed in as ${profile?.full_name||"you"} (${ROLE_LABEL[profile?.role]||profile?.role}).\n\nSign out?`)) supabase.auth.signOut(); }} aria-label="Account / Sign out">
+        {(profile?.full_name||"?").trim().charAt(0).toUpperCase()}
+      </button>
       <Sidebar tab={tab} setTab={setTab} settings={settings} nav={nav} profile={profile} onSignOut={()=>supabase.auth.signOut()}/>
       <main className="main" style={{marginLeft:232,minWidth:0}}>
         {tab==="dashboard" && <Dashboard {...{students,payments,attendance,staff,exams,settings,goTo:setTab,fees,profile}}/>}
@@ -388,7 +393,7 @@ function Sidebar({tab,setTab,settings,nav,profile,onSignOut}) {
     <nav className="side-nav" style={{display:"flex",flexDirection:"column",gap:3}}>
       {nav.map(([id,label,I])=><button key={id} className="side-btn btn" onClick={()=>setTab(id)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 11px",borderRadius:7,background:tab===id?"#DDA13A":"transparent",color:tab===id?"#0F2544":"#C9D3E2",textAlign:"left"}}><I/><span>{label}</span></button>)}
     </nav>
-    <div className="brand" style={{marginTop:"auto",borderTop:"1px solid #1c3357",paddingTop:15,color:"#7F91AC",fontSize:10.5,lineHeight:1.6}}>
+    <div className="sidebar-footer" style={{marginTop:"auto",borderTop:"1px solid #1c3357",paddingTop:15,color:"#7F91AC",fontSize:10.5,lineHeight:1.6}}>
       {profile?.full_name || "Signed in"}
       <br/><span style={{color:"#DDA13A",fontWeight:700}}>{ROLE_LABEL[profile?.role] || profile?.role}</span>
       <button className="btn ghost" onClick={onSignOut} style={{marginTop:10,padding:"6px 10px",borderRadius:6,fontSize:11,color:"#C9D3E2",borderColor:"#2c4266",width:"100%"}}>Sign out</button>
